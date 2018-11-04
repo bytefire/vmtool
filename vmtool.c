@@ -13,9 +13,22 @@
 struct vm_info {
 	struct dentry *root;
 	u64 msr_vmx_basic;
+	u64 vmcs_addr;
 };
 
 static struct vm_info *vm_info;
+
+static u64 get_vmx_basic(void)
+{
+	u32 msrlow, msrhigh;
+	u64 ret;
+
+	rdmsr(MSR_IA32_VMX_BASIC, msrlow, msrhigh);
+	ret = msrhigh;
+	ret = (ret << 32) | msrlow;
+
+	return ret;
+}
 
 static int get_vmcs_addr(void)
 {
@@ -90,8 +103,19 @@ static ssize_t vmcs_read(struct file *filp, char __user *buf,
 static ssize_t vmcs_write(struct file *filp, const char __user *buf,
 		size_t size, loff_t *off)
 {
-	/* TODO: this is dummy implementation */
-	return size;
+	ssize_t ret;
+	char *kbuf = kmalloc(size, GFP_KERNEL);
+
+	if (!kbuf)
+		return -ENOMEM;
+
+	copy_from_user(kbuf, buf, size);
+	kbuf[size] = '\0';
+	ret = kstrtoull(kbuf, 0, &vm_info->vmcs_addr);
+
+	kfree(kbuf);
+
+	return ret ? ret : size;
 }
 
 static const struct file_operations vmcs_fops = {
@@ -113,7 +137,7 @@ static int create_debugfs(void)
 	vm_info->root = root;
 
 	debugfs_create_file("vmcs-addrs", 0444, root, NULL, &vmcs_addrs_fops);
-	/* TODO: perhaps this should debugfs_create_blob() here */
+	/* TODO: why are we not using debugfs_create_blob() here? */
 	debugfs_create_file("vmcs", 0644, root, NULL, &vmcs_fops);
 	debugfs_create_u64("vmx-basic", 0444, root, &vm_info->msr_vmx_basic);
 
@@ -122,12 +146,11 @@ static int create_debugfs(void)
 
 static int __init vmtool_init(void)
 {
-	vm_info = kmalloc(sizeof(struct vm_info), GFP_KERNEL);
+	vm_info = kzalloc(sizeof(struct vm_info), GFP_KERNEL);
 	if (!vm_info)
 		return -ENOMEM;
 
-	/* TODO: initialise msr_vmx_basic properly */
-	vm_info->msr_vmx_basic = 0xabcdefab12345678;
+	vm_info->msr_vmx_basic = get_vmx_basic();
 
 	if (create_debugfs())
 		return -ENODEV;
