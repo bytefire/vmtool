@@ -1,0 +1,7 @@
+/sys/kernel/debug/vmtool/vmcs-addrs (ro):
+	read(): return comma separated list of physical addresses of vmcs's
+/sys/kernel/debug/vmtool/vmcs (rw):
+	read(): return raw bytes of vmcs pointed to by the address last written to this file
+	write(physical address): physical address of vmcs to read
+/sys/kernel/debug/vmtool/msr/vmx-basic (ro):
+	read(): return contents of IA32_VMX_BASIC
