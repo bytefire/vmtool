@@ -6,6 +6,7 @@
 #include <linux/slab.h>
 #include <asm/msr.h>
 
+#define MAX_LEN 256
 #define MSR_IA32_VMX_BASIC 0x00000480
 #define NO_CURRENT_VMCS 0xffffffffffffffff
 #define MIN(a,b) ((a)<(b) ? (a):(b))
@@ -14,6 +15,8 @@ struct vm_info {
 	struct dentry *root;
 	u64 msr_vmx_basic;
 	u64 vmcs_addr;
+	char vmcs_addrs[MAX_LEN];
+	size_t vmcs_addrs_len;
 };
 
 static struct vm_info *vm_info;
@@ -30,14 +33,25 @@ static u64 get_vmx_basic(void)
 	return ret;
 }
 
-static int get_vmcs_addr(void)
+static int populate_vmcs_addrs(void)
 {
-	u64 q = 0xabcd;
 	int ret = 0;
+	u64 q;
 	u32 *identifier;
-	u32 msrlow, msrhigh;
 
-	pr_info("Hello world\n");
+	/* TODO: this is okay for start but we really want to be more robust in
+	 * searching for vmcsc addrs. main reason is vmptrst will only return a
+	 * valid result when we get a timeslice on the cpu which is running as a
+	 * hypervisor for a vcpu and one of the vmcs's is active and current on
+	 * that cpu.
+	 *
+	 * 1. look for vmcs on different cpus.
+	 * 2. make multiple attempts at getting vmcs
+	 * 3. record the cpu number on which a particular vmcsc was observed.
+	 *   this is important because migrating a vmcs is costly and cpus are
+	 *   incentivised to keep a vcpu on the same cpu. we should also report
+	 *   the physical cpu number along with physical address of vmcs.
+	 */
 	asm volatile ("1: vmptrst (%%rax); movl $0, %0;"
                 "2:\t\n"
                 "\t.section .fixup,\"ax\"\n"
@@ -52,32 +66,47 @@ static int get_vmcs_addr(void)
 
         pr_info("ret=%d, q=0x%llx\n", ret, q);
 
-	rdmsr(MSR_IA32_VMX_BASIC, msrlow, msrhigh);
-	pr_info("msrlow = 0x%x, msrhigh = 0x%x\n", msrlow, msrhigh);
-
 	/* no error happened */
 	if (ret != -1 && q != NO_CURRENT_VMCS) {
+		/* TODO: in future we will return comma separated list of
+		 * physical addresses */
+		vm_info->vmcs_addrs_len = snprintf(vm_info->vmcs_addrs, MAX_LEN, "0x%llx", q);
+		// TODO: for testing only
 		identifier = __va(q);
 		pr_info("identifier=0x%x\n", *identifier);
-	} else
-		pr_info("couldn't get vmcs\n");
 
-	return 0;
+		return 0;
+	}
+	// TODO: return more accurate error code
+	pr_info("couldn't get vmcs\n");
+	return -1;
 }
 
 static ssize_t vmcs_addrs_read(struct file *filp, char __user *buf,
 		size_t size, loff_t *off)
 {
-	/* TODO: this is dummy implementation */
-	const char *ret = "vmcs_addrs_read_result";
-	size_t bytes_to_copy = MIN(strlen(ret) + 1, size);
-	size_t delta = bytes_to_copy - (*off);
+	int ret;
+	loff_t uoff = *off;
+	size_t delta, bytes_to_copy;
 
-	copy_to_user(buf, ret + (*off), delta);
+	if (uoff == 0) {
+		/* TODO: perhaps this should be stored in filp's private_data if
+		 * the file is opened multiple times */
+		ret = populate_vmcs_addrs();
+		if (ret)
+			return -ret;
+	}
 
-	*off += delta;
+	if (uoff > vm_info->vmcs_addrs_len)
+		return -ERANGE;
+	
+	delta = vm_info->vmcs_addrs_len - uoff;
+	bytes_to_copy = MIN(delta, size);
+	/* TODO: take into account bytes actually copied */
+	copy_to_user(buf, vm_info->vmcs_addrs + uoff, bytes_to_copy);
+	*off += bytes_to_copy;
 
-	return delta;
+	return bytes_to_copy;
 }
 
 static const struct file_operations vmcs_addrs_fops = {

@@ -5,3 +5,10 @@
 	write(physical address): physical address of vmcs to read
 /sys/kernel/debug/vmtool/msr/vmx-basic (ro):
 	read(): return contents of IA32_VMX_BASIC
+
+todo:
+----
+
+1. implement read() for vmcs and vmcs_addrs
+2. add readme which includes future plans
+3. simple user space utility in python
