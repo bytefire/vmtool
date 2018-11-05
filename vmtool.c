@@ -33,7 +33,7 @@ static u64 get_vmx_basic(void)
 	return ret;
 }
 
-static int populate_vmcs_addrs(void)
+static void populate_vmcs_addrs(void)
 {
 	int ret = 0;
 	u64 q;
@@ -74,27 +74,21 @@ static int populate_vmcs_addrs(void)
 		// TODO: for testing only
 		identifier = __va(q);
 		pr_info("identifier=0x%x\n", *identifier);
-
-		return 0;
+	} else {
+		pr_info("couldn't get vmcs\n");
 	}
-	// TODO: return more accurate error code
-	pr_info("couldn't get vmcs\n");
-	return -1;
 }
 
 static ssize_t vmcs_addrs_read(struct file *filp, char __user *buf,
 		size_t size, loff_t *off)
 {
-	int ret;
 	loff_t uoff = *off;
 	size_t delta, bytes_to_copy;
 
 	if (uoff == 0) {
 		/* TODO: perhaps this should be stored in filp's private_data if
 		 * the file is opened multiple times */
-		ret = populate_vmcs_addrs();
-		if (ret)
-			return -ret;
+		populate_vmcs_addrs();
 	}
 
 	if (uoff > vm_info->vmcs_addrs_len)
@@ -160,6 +154,7 @@ static int create_debugfs(void)
 	root = debugfs_create_dir("vmtool", NULL);
 	if (root == NULL || IS_ERR(root)) {
 		pr_warn("vmtool: can't create debugfs entries. not going to load the module.\n");
+		// TODO: return proper error code
 		return -1;
 	}
 
