@@ -9,7 +9,7 @@
 #define MAX_LEN 256
 #define MSR_IA32_VMX_BASIC 0x00000480
 /* isolate bits 44:32 of MSR_IA32_VMX_BASIC */
-#define VMCS_SIZE(x) ((x & 0x00001fff00000000) >> 32)
+#define VMCS_SIZE(x) (((x) << 19) >> 51)
 #define NO_CURRENT_VMCS 0xffffffffffffffff
 #define MIN(a,b) ((a)<(b) ? (a):(b))
 
@@ -142,19 +142,27 @@ static ssize_t vmcs_read(struct file *filp, char __user *buf,
 	//	convert physical address in vm_info->vmcs_addr into va.
 	//	read vmcs's size worth of bytes into buf - or size worth
 	//	of bytes and return read bytes and update off accordingly.
+	u8 *ptr;
+	loff_t uoff = *off;
+	size_t bytes_to_copy;
+	size_t vmcs_size = VMCS_SIZE(vm_info->msr_vmx_basic);
+
+	if (vm_info->vmcs_addr == 0)
+		return -ENODATA;
+	if (uoff > vmcs_size)
+		return -EINVAL;
+
+	ptr = __va(vm_info->vmcs_addr);
+
+	bytes_to_copy = MIN(size, (vmcs_size - uoff));
 
 
+	if (copy_to_user(buf, ptr + uoff, bytes_to_copy))
+		return -EFAULT;
 
-	/* TODO: this is dummy implementation */
-	const char *ret = "vmcs_read_result";
-	size_t bytes_to_copy = MIN(strlen(ret) + 1, size);
-	size_t delta = bytes_to_copy - (*off);
+	*off += bytes_to_copy;
 
-	copy_to_user(buf, ret + (*off), delta);
-
-	*off += delta;
-
-	return delta;
+	return bytes_to_copy;
 }
 
 static ssize_t vmcs_write(struct file *filp, const char __user *buf,
