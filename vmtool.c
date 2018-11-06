@@ -8,6 +8,8 @@
 
 #define MAX_LEN 256
 #define MSR_IA32_VMX_BASIC 0x00000480
+/* isolate bits 44:32 of MSR_IA32_VMX_BASIC */
+#define VMCS_SIZE(x) ((x & 0x00001fff00000000) >> 32)
 #define NO_CURRENT_VMCS 0xffffffffffffffff
 #define MIN(a,b) ((a)<(b) ? (a):(b))
 
@@ -17,6 +19,11 @@ struct vm_info {
 	u64 vmcs_addr;
 	char vmcs_addrs[MAX_LEN];
 	size_t vmcs_addrs_len;
+	/* TODO: we will not need following two when we have per-cpu kthreads
+	 * which create read-only files for every vmcs
+	 */
+	u64 cached_addrs[64];
+	int cached_addrs_count;
 };
 
 static struct vm_info *vm_info;
@@ -31,6 +38,23 @@ static u64 get_vmx_basic(void)
 	ret = (ret << 32) | msrlow;
 
 	return ret;
+}
+
+static void add_to_cache(u64 addr)
+{
+	int i;
+
+	if (vm_info->cached_addrs_count >= 64) {
+		pr_warn("unable to add vmcs address to cache.");
+		return;
+	}
+
+	for (i = 0; i < vm_info->cached_addrs_count; i++)
+		if (vm_info->cached_addrs[i] == addr)
+			return;
+
+	vm_info->cached_addrs[vm_info->cached_addrs_count] = addr;
+	vm_info->cached_addrs_count++;
 }
 
 static void populate_vmcs_addrs(void)
@@ -71,6 +95,9 @@ static void populate_vmcs_addrs(void)
 		/* TODO: in future we will return comma separated list of
 		 * physical addresses */
 		vm_info->vmcs_addrs_len = snprintf(vm_info->vmcs_addrs, MAX_LEN, "0x%llx", q);
+		// TODO: this won't be needed when we have per-cpu kthreads which create a
+		// file for each vmcs
+		add_to_cache(q);
 		// TODO: for testing only
 		identifier = __va(q);
 		pr_info("identifier=0x%x\n", *identifier);
@@ -111,6 +138,13 @@ static const struct file_operations vmcs_addrs_fops = {
 static ssize_t vmcs_read(struct file *filp, char __user *buf,
 		size_t size, loff_t *off)
 {
+	// TODO: get the size of vmcs using VMCS_SIZE(vm_info->msr_vmx_basic)
+	//	convert physical address in vm_info->vmcs_addr into va.
+	//	read vmcs's size worth of bytes into buf - or size worth
+	//	of bytes and return read bytes and update off accordingly.
+
+
+
 	/* TODO: this is dummy implementation */
 	const char *ret = "vmcs_read_result";
 	size_t bytes_to_copy = MIN(strlen(ret) + 1, size);
@@ -128,16 +162,34 @@ static ssize_t vmcs_write(struct file *filp, const char __user *buf,
 {
 	ssize_t ret;
 	char *kbuf = kmalloc(size, GFP_KERNEL);
+	u64 addr;
+	int i;
 
-	if (!kbuf)
-		return -ENOMEM;
+	if (!kbuf) {
+		ret = -ENOMEM;
+		goto out;
+	}
 
 	copy_from_user(kbuf, buf, size);
 	kbuf[size] = '\0';
-	ret = kstrtoull(kbuf, 0, &vm_info->vmcs_addr);
+	ret = kstrtoull(kbuf, 0, &addr);
 
+	if (ret)
+		goto free_and_out;
+
+	for (i = 0; i < vm_info->cached_addrs_count; i++)
+		if (vm_info->cached_addrs[i] == addr)
+			break;
+
+	if (i == vm_info->cached_addrs_count) {
+		ret = -EINVAL;
+		goto free_and_out;
+	}
+
+	vm_info->vmcs_addr = addr;
+free_and_out:
 	kfree(kbuf);
-
+out:
 	return ret ? ret : size;
 }
 
@@ -161,9 +213,15 @@ static int create_debugfs(void)
 	vm_info->root = root;
 
 	debugfs_create_file("vmcs-addrs", 0444, root, NULL, &vmcs_addrs_fops);
-	/* TODO: why are we not using debugfs_create_blob() here? */
+	/* TODO: we should spin a kthread for each cpu, which periodically search
+	 * for vmcs create files under vmtool/ debugfs entry where each file's name
+	 * is <cpu-number>-<physical address of a vmcs>. these can be files created
+	 * with debugfs_create_blob().
+	 *
+	 * this current set up isn't thread safe.
+	 */
 	debugfs_create_file("vmcs", 0644, root, NULL, &vmcs_fops);
-	debugfs_create_u64("vmx-basic", 0444, root, &vm_info->msr_vmx_basic);
+	debugfs_create_x64("vmx-basic", 0444, root, &vm_info->msr_vmx_basic);
 
 	return 0;
 }

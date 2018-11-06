@@ -2,4 +2,4 @@ i am writing this for my own learning and as a way to explore virtualisation at 
 
 currently this targets intel 64 only but ultimately this will address other architectures also, specifically AMD and ARM.
 
-this is work in progress, so interfaces will definitely change. hope is that they will stabilise soon.
+this is work in progress, so interfaces will definitely change. hope is that they will stabilise soon. also as WIP, the problems it has includes thread-safety. at the moment, the code isn't immune to bugs when debug files are concurrently opened and acccessed from user space. there are plans to deal with this and other limitations in comments inside the code.
