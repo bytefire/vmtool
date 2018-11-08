@@ -2,19 +2,17 @@
 - John Gall, The Systems Bible
 
 At the moment this tool is a way to learn and explore virtualisation at
-architecture level. It is currently intended to be one stop shop for all things
-related to virtualisation at _architecture level_, i.e. agnostic of hypervisors
-like KVM and Xen. What shape this will actually take is not decided yet. For
-example, this may become part of some research or end up fulfilling a different
-use case. The only guarantee is that this will be related to virtualisation. If
-you have any ideas, please do suggest them either by emailing me at
-okash.khawaja@gmail.com or in the "Issues" section of this GitHub project.
+architecture level, i.e. agnostic of hypervisors like KVM and Xen. What shape
+this will actually take is not decided yet. The only guarantee is that this
+will be related to virtualisation. If you have any ideas, please do suggest
+them either by emailing me at okash.khawaja@gmail.com or in the "Issues"
+section of this GitHub project.
 
 Currently this targets Intel 64 only but ultimately this will address other
 architectures also.
 
 This is work in progress, so interfaces will definitely change. Hope is that
-they will stabilise soon. As WIP, the problems it has include thread-safety.
-At the moment, the code isn't immune to bugs when debug files are concurrently
-opened and acccessed from user space. There are plans to deal with this and
-other limitations in comments inside the code.
+they will stabilise soon. Also as WIP, it is not thread safe yet. The code
+isn't immune to bugs when debug files are concurrently opened and acccessed
+from user space. There are plans to deal with this and other limitations in
+comments inside the code.
