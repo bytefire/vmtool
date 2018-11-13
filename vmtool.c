@@ -21,6 +21,10 @@ static atomic_t active_threads;
 static struct completion per_cpu_threads_done =
 	COMPLETION_INITIALIZER(per_cpu_threads_done);
 
+// TODO: add per_cpu_vm_info struct. then where per cpu threads are created,
+// create an array of these. each thread will access them using cpu number of
+// that thread
+
 struct vm_info {
 	struct dentry *root;
 	u64 msr_vmx_basic;
@@ -222,8 +226,7 @@ static int create_debugfs(void)
 	root = debugfs_create_dir("vmtool", NULL);
 	if (root == NULL || IS_ERR(root)) {
 		pr_warn("vmtool: can't create debugfs entries. not going to load the module.\n");
-		// TODO: return proper error code
-		return -1;
+		return PTR_ERR(root);
 	}
 
 	vm_info->root = root;
@@ -242,12 +245,29 @@ static int create_debugfs(void)
 	return 0;
 }
 
+static int per_cpu_create_debugfs(int cpu_num)
+{
+	struct dentry *dir;
+	char dir_name[8]; /* something like cpu-001 */
+
+	snprintf(dir_name, 8, "cpu-%03d", cpu_num);
+	dir = debugfs_create_dir(dir_name, vm_info->root);
+	if (dir == NULL || IS_ERR(dir)) {
+		pr_warn("vmtool: cpu %d: failed to create per cpu dir.\n",
+				cpu_num);
+		return PTR_ERR(dir);
+	}
+
+	return 0;
+}
+
 static int per_cpu_thread(void *arg)
 {
-	// TODO: get cpu number
 	int cpu_num = get_cpu();
 	pr_info("hello from cpu %d. arg = %ld\n", cpu_num, (long)arg);
 	put_cpu();
+
+	per_cpu_create_debugfs(cpu_num);
 
 	if (atomic_dec_return_relaxed(&active_threads) == 0)
 		complete(&per_cpu_threads_done);
@@ -269,12 +289,11 @@ static int start_per_cpu_threads(void)
 	for_each_online_cpu(cpu) {
 		struct task_struct *thread;
 
-
-		pr_info(">>>> (parent thread) for each cpu: %d\n", cpu);
 		thread = kthread_create(per_cpu_thread, (void *)(long)cpu,
 				"vmtool-per-cpu");
 		if (IS_ERR(thread))
-			pr_err(">>> ERROR creating per-cpu thread on cpu %d\n", cpu);
+			pr_err("error (%d) creating per-cpu thread on cpu %d\n",
+					cpu, PTR_ERR(thread));
 		else
 			threads[thread_count++] = thread;
 		kthread_bind(thread, cpu);
@@ -291,7 +310,8 @@ static int start_per_cpu_threads(void)
 	for (i = 0; i < thread_count; i++) {
 		ret = kthread_stop(threads[i]);
 		if (ret)
-			pr_warn(">>> thread %d returned %d\n", i, ret);
+			pr_warn("vmtool: thread %d failed to stop and returned %d\n",
+					i, ret);
 	}
 
 	kfree(threads);
