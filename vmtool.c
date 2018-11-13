@@ -4,6 +4,10 @@
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
+#include <linux/atomic.h>
+#include <linux/completion.h>
+#include <linux/kthread.h>
+#include <linux/smp.h>
 #include <asm/msr.h>
 
 #define MAX_LEN 256
@@ -12,6 +16,10 @@
 #define VMCS_SIZE(x) (((x) << 19) >> 51)
 #define NO_CURRENT_VMCS 0xffffffffffffffff
 #define MIN(a,b) ((a)<(b) ? (a):(b))
+
+static atomic_t active_threads;
+static struct completion per_cpu_threads_done =
+	COMPLETION_INITIALIZER(per_cpu_threads_done);
 
 struct vm_info {
 	struct dentry *root;
@@ -234,8 +242,73 @@ static int create_debugfs(void)
 	return 0;
 }
 
+static int per_cpu_thread(void *arg)
+{
+	// TODO: get cpu number
+	int cpu_num = get_cpu();
+	pr_info("hello from cpu %d. arg = %ld\n", cpu_num, (long)arg);
+	put_cpu();
+
+	if (atomic_dec_return_relaxed(&active_threads) == 0)
+		complete(&per_cpu_threads_done);
+
+	return 0;
+}
+
+static int start_per_cpu_threads(void)
+{
+	int cpu, thread_count = 0, i, ret;
+	struct task_struct **threads;
+	u32 online_cpus = num_online_cpus();
+
+	pr_info(">>> number of online cpus = %d\n", online_cpus);
+	threads = kmalloc_array(online_cpus, sizeof(*threads), GFP_KERNEL);
+	if (!threads)
+		return -ENOMEM;
+
+	for_each_online_cpu(cpu) {
+		struct task_struct *thread;
+
+
+		pr_info(">>>> (parent thread) for each cpu: %d\n", cpu);
+		thread = kthread_create(per_cpu_thread, (void *)(long)cpu,
+				"vmtool-per-cpu");
+		if (IS_ERR(thread))
+			pr_err(">>> ERROR creating per-cpu thread on cpu %d\n", cpu);
+		else
+			threads[thread_count++] = thread;
+		kthread_bind(thread, cpu);
+	}
+
+	atomic_set(&active_threads, thread_count);
+
+	pr_info("going to start per cpu threads\n");
+	for (i = 0; i < thread_count; i++)
+		wake_up_process(threads[i]);
+
+	wait_for_completion(&per_cpu_threads_done);
+
+	for (i = 0; i < thread_count; i++) {
+		ret = kthread_stop(threads[i]);
+		if (ret)
+			pr_warn(">>> thread %d returned %d\n", i, ret);
+	}
+
+	kfree(threads);
+	return 0;
+
+}
+
 static int __init vmtool_init(void)
 {
+	// TODO: check drivers/firmware/psci_checker.c:suspend_tests(void) which runs a test on each cpu
+	/* TODO: 1. list all cpu's and for each cpu spin a kthread
+	 *	2. each thread to create a directory "cpu-<cpu-num>"
+	 *	3. inside it create a file whose name is physical address of vmcs as hex string
+	 *	4. reading each such file will give a timestamp and data of that vmcs
+	 */
+	int ret = 0;
+
 	vm_info = kzalloc(sizeof(struct vm_info), GFP_KERNEL);
 	if (!vm_info)
 		return -ENOMEM;
@@ -245,11 +318,14 @@ static int __init vmtool_init(void)
 	if (create_debugfs())
 		return -ENODEV;
 
-	return 0;
+	ret = start_per_cpu_threads();
+
+	return ret;
 }
   
 static void __exit vmtool_exit(void)
 {
+	/* TODO: close all per-cpu kthreads */
 	debugfs_remove_recursive(vm_info->root);
 	kfree(vm_info);
 	pr_info("Exiting vmtool\n");
