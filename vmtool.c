@@ -260,6 +260,28 @@ static int create_debugfs(void)
 	return 0;
 }
 
+static int get_vmcs_addr(u64 *addr)
+{
+	int ret = 0;
+	u64 q;
+
+	asm volatile ("1: vmptrst (%%rax); movl $0, %0;"
+                "2:\t\n"
+                "\t.section .fixup,\"ax\"\n"
+                "3:\tmov\t$-1, %0\n"
+                "\tjmp\t2b\n"
+                "\t.previous\n"
+                _ASM_EXTABLE(1b, 3b)
+                : "=r"(ret)
+                : "a"(&q)
+                : "memory"
+	);
+
+	*addr = q;
+
+	return ret;
+}
+
 static int per_cpu_create_debugfs(int cpu_num)
 {
 	struct dentry *dir;
@@ -278,10 +300,60 @@ static int per_cpu_create_debugfs(int cpu_num)
 	return 0;
 }
 
+static int per_cpu_init(int cpu_num)
+{
+	int ret;
+	struct list_head *vcpu_list =
+		&(vm_info->per_cpu_arr[cpu_num].vcpu_list);
+
+	ret = per_cpu_create_debugfs(cpu_num);
+	if (ret)
+		return ret;
+
+	INIT_LIST_HEAD(vcpu_list);
+
+	return ret;
+}
+
+static int per_cpu_handle_addr(int cpu_num, u64 addr)
+{
+	struct list_head *vcpu_list =
+		&(vm_info->per_cpu_arr[cpu_num].vcpu_list);
+	struct vm_vcpu_info *vci;
+	int found = 0;
+
+	list_for_each_entry(vci, vcpu_list, list) {
+		// TODO: for testing only
+		pr_info("cpu: %d: vci->vmcs_addr = 0x%llx\n",
+				cpu_num, vci->vmcs_addr);
+		if (vci->vmcs_addr == addr) {
+			found = 1;
+			break;
+		}
+	}
+
+	if (found) {
+		vci->last_seen = ktime_get_real_seconds();
+	} else {
+		vci = kmalloc(sizeof(struct vm_vcpu_info), GFP_KERNEL);
+		if (!vci)
+			return -ENOMEM;
+		vci->vmcs_addr = addr;
+		vci->last_seen = ktime_get_real_seconds();
+		list_add(&vci->list, vcpu_list);
+		/* TODO: create a file with name = addr string */
+	}
+
+	return 0;
+}
+
 static void per_cpu_do_work(int cpu_num)
 {
 	while (!vm_info->stop_per_cpu_threads) {
-		pr_info(">>> do_work from cpu %d\n", cpu_num);
+		u64 addr;
+		if (get_vmcs_addr(&addr) == 0)
+			// TODO: check return value
+			per_cpu_handle_addr(cpu_num, addr);
 		msleep_interruptible(1000); /* sleep for 1 second */
 	}
 }
@@ -292,7 +364,7 @@ static int per_cpu_thread(void *arg)
 	pr_info("hello from cpu %d. arg = %ld\n", cpu_num, (long)arg);
 	put_cpu();
 
-	per_cpu_create_debugfs(cpu_num);
+	per_cpu_init(cpu_num);
 	per_cpu_do_work(cpu_num);
 
 	return 0;
@@ -349,10 +421,23 @@ static void stop_per_cpu_threads(void)
 
 	vm_info->stop_per_cpu_threads = 1;
 	for (i = 0; i < vm_info->thread_count; i++) {
-		ret = kthread_stop(vm_info->threads[i]);
-		if (ret)
-			pr_warn("vmtool: thread %d failed to stop and returned %d\n",
+		struct list_head *vcpu_list;
+		struct vm_vcpu_info *curr, *next;
+		/* this check is in case we have fewer online cpus than
+		 * available cpus
+		 */
+		if (vm_info->threads[i]) {
+			ret = kthread_stop(vm_info->threads[i]);
+			if (ret)
+				pr_warn("vmtool: thread %d failed to stop and returned %d\n",
 					i, ret);
+		}
+
+		vcpu_list = &vm_info->per_cpu_arr[i].vcpu_list;
+		list_for_each_entry_safe(curr, next, vcpu_list, list) {
+			list_del(&curr->list);
+			kfree(curr);
+		}
 	}
 
 	kfree(vm_info->threads);
