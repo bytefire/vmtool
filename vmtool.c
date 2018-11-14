@@ -278,6 +278,8 @@ static int get_vmcs_addr(u64 *addr)
 	);
 
 	*addr = q;
+	if (q == NO_CURRENT_VMCS)
+		ret = -1;
 
 	return ret;
 }
@@ -315,6 +317,18 @@ static int per_cpu_init(int cpu_num)
 	return ret;
 }
 
+static ssize_t vm_vcpu_read(struct file *filp, char __user *buf,
+		size_t size, loff_t *off)
+{
+	// TODO implement this
+	return size;
+}
+
+static const struct file_operations vm_vcpu_fops = {
+	.owner = THIS_MODULE,
+	.read = vm_vcpu_read,
+};
+
 static int per_cpu_handle_addr(int cpu_num, u64 addr)
 {
 	struct list_head *vcpu_list =
@@ -335,13 +349,17 @@ static int per_cpu_handle_addr(int cpu_num, u64 addr)
 	if (found) {
 		vci->last_seen = ktime_get_real_seconds();
 	} else {
+		char fn[17];
 		vci = kmalloc(sizeof(struct vm_vcpu_info), GFP_KERNEL);
 		if (!vci)
 			return -ENOMEM;
 		vci->vmcs_addr = addr;
 		vci->last_seen = ktime_get_real_seconds();
 		list_add(&vci->list, vcpu_list);
-		/* TODO: create a file with name = addr string */
+		snprintf(fn, 17, "%llx", addr);
+		debugfs_create_file(fn, 0444,
+				vm_info->per_cpu_arr[cpu_num].cpu_dir,
+				vci, &vm_vcpu_fops);
 	}
 
 	return 0;
