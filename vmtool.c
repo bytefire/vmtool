@@ -8,6 +8,9 @@
 #include <linux/completion.h>
 #include <linux/kthread.h>
 #include <linux/smp.h>
+#include <linux/timekeeping.h>
+#include <linux/time64.h>
+#include <linux/delay.h>
 #include <asm/msr.h>
 
 #define MAX_LEN 256
@@ -17,17 +20,29 @@
 #define NO_CURRENT_VMCS 0xffffffffffffffff
 #define MIN(a,b) ((a)<(b) ? (a):(b))
 
-static atomic_t active_threads;
-static struct completion per_cpu_threads_done =
-	COMPLETION_INITIALIZER(per_cpu_threads_done);
+struct vm_vcpu_info {
+	u64 vmcs_addr;
+	/* TODO: currently this is seconds since epoch. we want to be more accurate */
+	time64_t last_seen;
+	struct list_head list;
+};
 
-// TODO: add per_cpu_vm_info struct. then where per cpu threads are created,
-// create an array of these. each thread will access them using cpu number of
-// that thread
+
+struct per_cpu_info {
+	struct dentry *cpu_dir;
+	struct list_head vcpu_list;
+};
 
 struct vm_info {
 	struct dentry *root;
 	u64 msr_vmx_basic;
+	struct task_struct **threads;
+	int thread_count;
+	struct per_cpu_info *per_cpu_arr;
+	int stop_per_cpu_threads;
+
+
+
 	u64 vmcs_addr;
 	char vmcs_addrs[MAX_LEN];
 	size_t vmcs_addrs_len;
@@ -258,7 +273,17 @@ static int per_cpu_create_debugfs(int cpu_num)
 		return PTR_ERR(dir);
 	}
 
+	vm_info->per_cpu_arr[cpu_num].cpu_dir = dir;
+
 	return 0;
+}
+
+static void per_cpu_do_work(int cpu_num)
+{
+	while (!vm_info->stop_per_cpu_threads) {
+		pr_info(">>> do_work from cpu %d\n", cpu_num);
+		msleep_interruptible(1000); /* sleep for 1 second */
+	}
 }
 
 static int per_cpu_thread(void *arg)
@@ -268,23 +293,32 @@ static int per_cpu_thread(void *arg)
 	put_cpu();
 
 	per_cpu_create_debugfs(cpu_num);
-
-	if (atomic_dec_return_relaxed(&active_threads) == 0)
-		complete(&per_cpu_threads_done);
+	per_cpu_do_work(cpu_num);
 
 	return 0;
 }
 
 static int start_per_cpu_threads(void)
 {
-	int cpu, thread_count = 0, i, ret;
-	struct task_struct **threads;
+	int cpu, i, ret = 0;
 	u32 online_cpus = num_online_cpus();
 
 	pr_info(">>> number of online cpus = %d\n", online_cpus);
-	threads = kmalloc_array(online_cpus, sizeof(*threads), GFP_KERNEL);
-	if (!threads)
-		return -ENOMEM;
+	vm_info->threads = kmalloc_array(online_cpus, sizeof(*vm_info->threads), GFP_KERNEL);
+	if (!vm_info->threads) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	/* TODO: array length must be number of _available_ cpus, not
+	 * the number of online cpus.
+	 */
+	vm_info->per_cpu_arr = kmalloc_array(online_cpus,
+			sizeof(struct per_cpu_info), GFP_KERNEL);
+	if (!vm_info->per_cpu_arr) {
+		ret = -ENOMEM;
+		goto out;
+	}
 
 	for_each_online_cpu(cpu) {
 		struct task_struct *thread;
@@ -292,36 +326,41 @@ static int start_per_cpu_threads(void)
 		thread = kthread_create(per_cpu_thread, (void *)(long)cpu,
 				"vmtool-per-cpu");
 		if (IS_ERR(thread))
-			pr_err("error (%d) creating per-cpu thread on cpu %d\n",
+			pr_err("error (%d) creating per-cpu thread on cpu %ld\n",
 					cpu, PTR_ERR(thread));
 		else
-			threads[thread_count++] = thread;
+			vm_info->threads[vm_info->thread_count++] = thread;
 		kthread_bind(thread, cpu);
 	}
 
-	atomic_set(&active_threads, thread_count);
+	vm_info->stop_per_cpu_threads = 0;
 
 	pr_info("going to start per cpu threads\n");
-	for (i = 0; i < thread_count; i++)
-		wake_up_process(threads[i]);
+	for (i = 0; i < vm_info->thread_count; i++)
+		wake_up_process(vm_info->threads[i]);
 
-	wait_for_completion(&per_cpu_threads_done);
+out:
+	return ret;
+}
 
-	for (i = 0; i < thread_count; i++) {
-		ret = kthread_stop(threads[i]);
+static void stop_per_cpu_threads(void)
+{
+	int i, ret;
+
+	vm_info->stop_per_cpu_threads = 1;
+	for (i = 0; i < vm_info->thread_count; i++) {
+		ret = kthread_stop(vm_info->threads[i]);
 		if (ret)
 			pr_warn("vmtool: thread %d failed to stop and returned %d\n",
 					i, ret);
 	}
 
-	kfree(threads);
-	return 0;
-
+	kfree(vm_info->threads);
+	kfree(vm_info->per_cpu_arr);
 }
 
 static int __init vmtool_init(void)
 {
-	// TODO: check drivers/firmware/psci_checker.c:suspend_tests(void) which runs a test on each cpu
 	/* TODO: 1. list all cpu's and for each cpu spin a kthread
 	 *	2. each thread to create a directory "cpu-<cpu-num>"
 	 *	3. inside it create a file whose name is physical address of vmcs as hex string
@@ -345,7 +384,7 @@ static int __init vmtool_init(void)
   
 static void __exit vmtool_exit(void)
 {
-	/* TODO: close all per-cpu kthreads */
+	stop_per_cpu_threads();
 	debugfs_remove_recursive(vm_info->root);
 	kfree(vm_info);
 	pr_info("Exiting vmtool\n");
