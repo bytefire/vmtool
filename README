@@ -26,10 +26,10 @@ information about virtualisation, such as virtualisation related MSRs, and
 per-cpu dynamic information about vCPUs. For per-cpu info, vmtool spins one
 kthread for each online cpu on the system. Hot-plugging isn't supported yet.
 Each per-cpu kthread wakes up every 1 second (in future this will be
-configurable) and searches of vCPU running on that cpu. Each vCPU is identified
-by physical address of its Virtual Machine Control Structure (VMCS). Upon
-finding a vCPU, the kthread updates its data. Currently that data is just one
-field - last seen time stamp - but this can be extended in future.
+configurable) and searches of vCPU running on that host cpu. Each vCPU is
+identified by physical address of its Virtual Machine Control Structure (VMCS).
+Upon finding a vCPU, the kthread updates its data. Currently that data is just
+one field - last seen time stamp - but this can be extended in future.
 
 Kernel-User Space Interface:
 ============================
@@ -52,10 +52,13 @@ $ sudo tree /sys/kernel/debug/vmtool/
 
 2 directories, 4 files
 
-`vmtool` is root directory.
-`vmx-basic` is a read-only file which returns value of IA32_VMX_BASIC MSR. In
-future, other MSRs and any related global info will go here.
-`cpu-nnn` is a directory for each online cpu on the host machine. This contains
+- `vmtool` is root directory.
+
+- `vmx-basic` is a read-only file which returns value of IA32_VMX_BASIC MSR. In
+future, other MSRs and any related global info will be exposed at same level as
+this file.
+
+- `cpu-nnn` is a directory for each online cpu on the host machine. This contains
 one file for each vCPU which was observed on that host cpu.
 
 Each file under cpu-nnn is named as physical address in hex of VMCS struct
