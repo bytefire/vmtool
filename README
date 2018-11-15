@@ -11,8 +11,58 @@ section of this GitHub project.
 Currently this targets Intel 64 only but ultimately this will address other
 architectures also.
 
-This is work in progress, so interfaces will definitely change. Hope is that
-they will stabilise soon. Also as WIP, it is not thread safe yet. The code
-isn't immune to bugs when debug files are concurrently opened and acccessed
-from user space. There are plans to deal with this and other limitations in
-comments inside the code.
+Overview:
+=========
+
+vmtool has two components: kernel and user space. Kernel component is in form
+of a loadable kernel module for Linux, vmtool.ko, which exposes itself through
+a debugfs interface. User space component [TODO: this hasn't been written yet]
+is a command line python application which builds on top of debugfs interface.
+Of course, the user space part can be in other forms also, e.g. a lib with
+bindings for different languages.
+
+The kernel module exposes two types of information: global (and mostly static)
+information about virtualisation, such as virtualisation related MSRs, and
+per-cpu dynamic information about vCPUs. For per-cpu info, vmtool spins one
+kthread for each online cpu on the system. Hot-plugging isn't supported yet.
+Each per-cpu kthread wakes up every 1 second (in future this will be
+configurable) and searches of vCPU running on that cpu. Each vCPU is identified
+by physical address of its Virtual Machine Control Structure (VMCS). Upon
+finding a vCPU, the kthread updates its data. Currently that data is just one
+field - last seen time stamp - but this can be extended in future.
+
+Kernel-User Space Interface:
+============================
+
+The kernel module exposes a debugfs interface to user space. This means user
+space will need to constantly poll rather than be notified by kernel for vCPU
+updates. Here is the API.
+
+Assuming that debugfs is mounted at /sys/kernel/debug/, here is an example of
+what the directory structure looks like:
+
+$ sudo tree /sys/kernel/debug/vmtool/       
+/sys/kernel/debug/vmtool/
+|-- cpu-000
+|   |-- 373d8000
+|   `-- c1853000
+|-- cpu-001
+|   `-- c1853000
+`-- vmx-basic
+
+2 directories, 4 files
+
+`vmtool` is root directory.
+`vmx-basic` is a read-only file which returns value of IA32_VMX_BASIC MSR. In
+future, other MSRs and any related global info will go here.
+`cpu-nnn` is a directory for each online cpu on the host machine. This contains
+one file for each vCPU which was observed on that host cpu.
+
+Each file under cpu-nnn is named as physical address in hex of VMCS struct
+which represents a vCPU. Reading this file will give POSIX time when this vCPU
+was last observed:
+
+$ sudo cat /sys/kernel/debug/vmtool/cpu-001/c1853000 | printf '%(%F %T)T\n' 
+2018-11-15 11:12:04
+
+
