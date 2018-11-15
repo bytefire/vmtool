@@ -11,8 +11,10 @@
 #include <linux/timekeeping.h>
 #include <linux/time64.h>
 #include <linux/delay.h>
+#include <linux/fs.h>
 #include <asm/msr.h>
 
+#define BUF_LEN 32
 #define MAX_LEN 256
 #define MSR_IA32_VMX_BASIC 0x00000480
 /* isolate bits 44:32 of MSR_IA32_VMX_BASIC */
@@ -183,7 +185,6 @@ static ssize_t vmcs_read(struct file *filp, char __user *buf,
 
 	bytes_to_copy = MIN(size, (vmcs_size - uoff));
 
-
 	if (copy_to_user(buf, ptr + uoff, bytes_to_copy))
 		return -EFAULT;
 
@@ -320,13 +321,31 @@ static int per_cpu_init(int cpu_num)
 static ssize_t vm_vcpu_read(struct file *filp, char __user *buf,
 		size_t size, loff_t *off)
 {
-	// TODO implement this
-	return size;
+	/* in future this can contain colon separated values */
+	char data[BUF_LEN];
+	struct vm_vcpu_info *v;
+
+	if (*off == BUF_LEN)
+		return 0;
+
+	if (!filp->private_data)
+		return -ENOENT;
+	v = filp->private_data;
+	memset(data, 0, BUF_LEN);
+	snprintf(data, BUF_LEN, "%lld", v->last_seen);
+
+	if (copy_to_user(buf, data, BUF_LEN))
+		return -EFAULT;
+
+	*off += BUF_LEN;
+
+	return BUF_LEN;
 }
 
 static const struct file_operations vm_vcpu_fops = {
 	.owner = THIS_MODULE,
 	.read = vm_vcpu_read,
+	.open = simple_open,
 };
 
 static int per_cpu_handle_addr(int cpu_num, u64 addr)
@@ -337,9 +356,6 @@ static int per_cpu_handle_addr(int cpu_num, u64 addr)
 	int found = 0;
 
 	list_for_each_entry(vci, vcpu_list, list) {
-		// TODO: for testing only
-		pr_info("cpu: %d: vci->vmcs_addr = 0x%llx\n",
-				cpu_num, vci->vmcs_addr);
 		if (vci->vmcs_addr == addr) {
 			found = 1;
 			break;
@@ -357,6 +373,8 @@ static int per_cpu_handle_addr(int cpu_num, u64 addr)
 		vci->last_seen = ktime_get_real_seconds();
 		list_add(&vci->list, vcpu_list);
 		snprintf(fn, 17, "%llx", addr);
+		// TODO: for testing only
+		pr_info("setting private_data tp 0x%p\n", vci);
 		debugfs_create_file(fn, 0444,
 				vm_info->per_cpu_arr[cpu_num].cpu_dir,
 				vci, &vm_vcpu_fops);
